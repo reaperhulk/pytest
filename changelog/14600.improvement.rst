@@ -1,0 +1,9 @@
+Reduced the time and memory needed to collect large numbers of parametrized tests.
+
+- Test reordering for high-scoped parametrized fixtures (:func:`pytest.fixture` with
+  ``scope`` higher than ``function``) is now skipped entirely when no such
+  parametrization is present, which is the common case.
+- The :hook:`pytest_make_parametrize_id` hook is no longer invoked per parameter
+  value when no plugin implements it.
+- Each collection node no longer eagerly allocates an empty
+  ``extra_keyword_matches`` set; it is now created lazily on first use.

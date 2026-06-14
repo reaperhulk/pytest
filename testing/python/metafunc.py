@@ -669,6 +669,13 @@ class TestMetafunc:
             def __init__(self, config):
                 self.config = config
 
+            @property
+            def hook(self):
+                return self
+
+            def pytest_make_parametrize_id(self, **kw):
+                pass
+
             def getini(self, name):
                 return self.config[name]
 

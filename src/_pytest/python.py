@@ -80,6 +80,7 @@ from _pytest.warning_types import PytestReturnNotNoneWarning
 
 
 if TYPE_CHECKING:
+    from pluggy import HookCaller
     from typing_extensions import Self
 
 
@@ -973,6 +974,19 @@ class IdMaker:
 
     def _resolve_ids(self) -> Iterable[str | _HiddenParam]:
         """Resolve IDs for all ParameterSets (may contain duplicates)."""
+        # Only consult the pytest_make_parametrize_id hook if a plugin actually
+        # implements it. Determining this once (rather than dispatching the hook
+        # for every single value) avoids significant per-value overhead when
+        # collecting large parametrizations, which is the common case.
+        hook = None
+        if self.config is not None:
+            hook = self.config.hook.pytest_make_parametrize_id
+            # ``get_hookimpls`` lets us skip the hook entirely when no plugin
+            # implements it. Guard with ``getattr`` so config-likes that don't
+            # expose a real pluggy HookCaller still get the hook consulted.
+            get_hookimpls = getattr(hook, "get_hookimpls", None)
+            if get_hookimpls is not None and not get_hookimpls():
+                hook = None
         for idx, parameterset in enumerate(self.parametersets):
             if parameterset.id is not None:
                 # ID provided directly - pytest.param(..., id="...")
@@ -989,20 +1003,27 @@ class IdMaker:
             else:
                 # ID not provided - generate it.
                 yield "-".join(
-                    self._idval(val, argname, idx)
+                    self._idval(val, argname, idx, hook)
                     for val, argname in zip(
                         parameterset.values, self.argnames, strict=True
                     )
                 )
 
-    def _idval(self, val: object, argname: str, idx: int) -> str:
+    def _idval(
+        self,
+        val: object,
+        argname: str,
+        idx: int,
+        hook: HookCaller | None = None,
+    ) -> str:
         """Make an ID for a parameter in a ParameterSet."""
         idval = self._idval_from_function(val, argname, idx)
         if idval is not None:
             return idval
-        idval = self._idval_from_hook(val, argname)
-        if idval is not None:
-            return idval
+        if hook is not None:
+            idval = self._idval_from_hook(val, argname, hook)
+            if idval is not None:
+                return idval
         idval = self._idval_from_value(val)
         if idval is not None:
             return idval
@@ -1024,15 +1045,13 @@ class IdMaker:
             return None
         return self._idval_from_value(id)
 
-    def _idval_from_hook(self, val: object, argname: str) -> str | None:
+    def _idval_from_hook(
+        self, val: object, argname: str, hook: HookCaller
+    ) -> str | None:
         """Try to make an ID for a parameter in a ParameterSet by calling the
         :hook:`pytest_make_parametrize_id` hook."""
-        if self.config:
-            id: str | None = self.config.hook.pytest_make_parametrize_id(
-                config=self.config, val=val, argname=argname
-            )
-            return id
-        return None
+        id: str | None = hook(config=self.config, val=val, argname=argname)
+        return id
 
     def _idval_from_value(self, val: object) -> str | None:
         """Try to make an ID for a parameter in a ParameterSet from its value,

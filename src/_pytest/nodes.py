@@ -189,9 +189,6 @@ class Node(abc.ABC, metaclass=NodeMeta):
         #: The marker objects belonging to this node.
         self.own_markers: list[Mark] = []
 
-        #: Allow adding of extra keywords to use for matching.
-        self.extra_keyword_matches: set[str] = set()
-
         if nodeid is not None:
             assert "::()" not in nodeid
             self._nodeid = nodeid
@@ -273,6 +270,25 @@ class Node(abc.ABC, metaclass=NodeMeta):
     def nodeid(self) -> str:
         """A ::-separated string denoting its collection tree address."""
         return self._nodeid
+
+    @property
+    def extra_keyword_matches(self) -> set[str]:
+        """Extra keywords to use for ``-k`` matching, in addition to the node's
+        own name and markers.
+
+        The backing set is created lazily on first access: the vast majority of
+        nodes never use it, and a collection tree with many (parametrized) items
+        would otherwise allocate one empty set per item.
+        """
+        try:
+            return self._extra_keyword_matches
+        except AttributeError:
+            self._extra_keyword_matches: set[str] = set()
+            return self._extra_keyword_matches
+
+    @extra_keyword_matches.setter
+    def extra_keyword_matches(self, value: set[str]) -> None:
+        self._extra_keyword_matches = value
 
     def __hash__(self) -> int:
         return hash(self._nodeid)
@@ -367,7 +383,9 @@ class Node(abc.ABC, metaclass=NodeMeta):
         """Return a set of all extra keywords in self and any parents."""
         extra_keywords: set[str] = set()
         for item in self.listchain():
-            extra_keywords.update(item.extra_keyword_matches)
+            # Read the backing attribute directly to avoid materializing the
+            # (lazily created) empty set on nodes that never used it.
+            extra_keywords.update(getattr(item, "_extra_keyword_matches", ()))
         return extra_keywords
 
     def listnames(self) -> list[str]:

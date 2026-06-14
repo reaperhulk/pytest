@@ -221,48 +221,67 @@ _V = TypeVar("_V")
 OrderedSet = dict[_V, None]
 
 
-def get_param_argkeys(item: nodes.Item, scope: Scope) -> Iterator[ParamArgKey]:
-    """Return all ParamArgKeys for item matching the specified high scope."""
-    assert scope is not Scope.Function
+def get_param_argkeys(item: nodes.Item) -> Iterator[tuple[Scope, ParamArgKey]]:
+    """Yield ``(scope, ParamArgKey)`` for each of the item's parameters that is
+    scoped higher than Function.
 
+    Items without any (high-scoped) parametrization yield nothing. Iterating all
+    of an item's high scopes in a single pass (rather than once per scope) keeps
+    ``reorder_items`` cheap when collecting many parametrized items.
+    """
     try:
         callspec: CallSpec2 = item.callspec  # type: ignore[attr-defined]
     except AttributeError:
         return
 
-    item_cls = None
-    if scope is Scope.Session:
-        scoped_item_path = None
-    elif scope is Scope.Package:
-        # Package key = module's directory.
-        scoped_item_path = item.path.parent
-    elif scope is Scope.Module:
-        scoped_item_path = item.path
-    elif scope is Scope.Class:
-        scoped_item_path = item.path
-        item_cls = item.cls  # type: ignore[attr-defined]
-    else:
-        assert_never(scope)
+    arg2scope = callspec._arg2scope
+    # Most parametrizations are function-scoped; bail out before touching
+    # ``item.path``/``item.cls`` when there is nothing higher to reorder.
+    if all(scope is Scope.Function for scope in arg2scope.values()):
+        return
 
-    for argname in callspec.indices:
-        if callspec._arg2scope[argname] != scope:
+    item_path = item.path
+    for argname, param_index in callspec.indices.items():
+        scope = arg2scope[argname]
+        item_cls = None
+        if scope is Scope.Function:
             continue
-        param_index = callspec.indices[argname]
-        yield ParamArgKey(argname, param_index, scoped_item_path, item_cls)
+        elif scope is Scope.Session:
+            scoped_item_path = None
+        elif scope is Scope.Package:
+            # Package key = module's directory.
+            scoped_item_path = item_path.parent
+        elif scope is Scope.Module:
+            scoped_item_path = item_path
+        elif scope is Scope.Class:
+            scoped_item_path = item_path
+            item_cls = item.cls  # type: ignore[attr-defined]
+        else:
+            assert_never(scope)
+        yield scope, ParamArgKey(argname, param_index, scoped_item_path, item_cls)
 
 
 def reorder_items(items: Sequence[nodes.Item]) -> list[nodes.Item]:
-    argkeys_by_item: dict[Scope, dict[nodes.Item, OrderedSet[ParamArgKey]]] = {}
-    items_by_argkey: dict[Scope, dict[ParamArgKey, OrderedDict[nodes.Item, None]]] = {}
-    for scope in HIGH_SCOPES:
-        scoped_argkeys_by_item = argkeys_by_item[scope] = {}
-        scoped_items_by_argkey = items_by_argkey[scope] = defaultdict(OrderedDict)
-        for item in items:
-            argkeys = dict.fromkeys(get_param_argkeys(item, scope))
-            if argkeys:
-                scoped_argkeys_by_item[item] = argkeys
-                for argkey in argkeys:
-                    scoped_items_by_argkey[argkey][item] = None
+    argkeys_by_item: dict[Scope, dict[nodes.Item, OrderedSet[ParamArgKey]]] = {
+        scope: {} for scope in HIGH_SCOPES
+    }
+    items_by_argkey: dict[Scope, dict[ParamArgKey, OrderedDict[nodes.Item, None]]] = {
+        scope: defaultdict(OrderedDict) for scope in HIGH_SCOPES
+    }
+    # Whether any item is parametrized at a scope higher than Function. Only such
+    # parametrizations need reordering; in their absence (e.g. only plain or
+    # function-scoped parametrization, which is by far the most common case) the
+    # whole reordering below is a no-op, so we can avoid the expensive bookkeeping
+    # and recursion entirely.
+    have_high_scope_params = False
+    for item in items:
+        for scope, argkey in get_param_argkeys(item):
+            have_high_scope_params = True
+            argkeys_by_item[scope].setdefault(item, {})[argkey] = None
+            items_by_argkey[scope][argkey][item] = None
+
+    if not have_high_scope_params:
+        return list(items)
 
     items_set = dict.fromkeys(items)
     return list(
